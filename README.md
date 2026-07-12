@@ -86,7 +86,7 @@ tasklist | findstr EXCEL
 |---|---|
 | [📖 Manual Interactivo](MANUAL.md) | **Punto de partida**: casos de uso, flujos de trabajo, limitaciones conocidas |
 | [📚 Referencia de Tools](TOOLS.md) | API completa de las 48 herramientas (argumentos, retornos, notas) |
-| [🤖 Contexto para Agentes](AGENTS.md) | Arquitectura, restricciones y convenciones para agentes de IA |
+| [🤖 Contexto para Agentes](excel-mcp-server-2013/CLAUDE.md) | Arquitectura, restricciones y convenciones para desarrolladores (archivo local) |
 
 ---
 
