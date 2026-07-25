@@ -15,8 +15,8 @@ Ruta del código: `excel-mcp-server-2013/src/excel_mcp_2013/`
 |---|------------|----------------------|--------|
 | 1 | `open_workbook` se cuelga: diálogo **"Conflicto de nombres"** por nombres definidos rotos (NO era update-links) | Bloqueó Excel 120 s; hubo que matar el proceso | ✅ **RESUELTO** (saneo auto) |
 | 2 | Una llamada COM colgada tumba TODA la sesión (STA único) | `get_session_info` también expiró; se perdió el libro abierto | ✅ **RESUELTO** (fail-fast por diálogo + kill inmediato + timeout dedicado) |
-| 3 | Sin lectura masiva de `.xlsb` / tabla por nombre / Data Model | Hubo que extraer con `pyxlsb` fuera del MCP | 🟠 Alta |
-| 4 | No hay herramienta de recálculo; cálculo forzado a MANUAL | Fórmulas no evaluaban hasta guardar+reabrir | 🟠 Alta |
+| 3 | Sin lectura masiva de `.xlsb` / tabla por nombre / Data Model | Hubo que extraer con `pyxlsb` fuera del MCP | ✅ **RESUELTO** (v1.4.0: read_table, export_sheet, diagnóstico) |
+| 4 | No hay herramienta de recálculo; cálculo forzado a MANUAL | Fórmulas no evaluaban hasta guardar+reabrir | ✅ **RESUELTO** (v1.4.0: recalculate) |
 | 5 | Autoría de libros (hojas+estilos) inviable por COM en volumen | Se construyó con `openpyxl`, MCP solo validó | 🟡 Media (workflow) |
 | 6 | Nota: la codificación Unicode del MCP funcionó bien | (no es bug — ver abajo) | ⚪ Info |
 
@@ -159,6 +159,14 @@ implícitas / modelo no materializado vía COM.
    lugar de un `[]` silencioso. Considerar introspección vía el propio motor tabular.
 4. Documentar que para `.xlsb` masivo el camino más rápido es `Value2` sobre `UsedRange`.
 
+**✅ RESUELTO (v1.4.0, 2026-07-24).** Nuevo `tools/bulk.py`: `read_table(name, dest)`
+(ListObject completo por nombre, 2 llamadas COM) y `export_sheet(sheet, dest, range_addr)`
+(`UsedRange`/rango en 1 llamada `.Value`). Entrega archivo+muestra (no revienta contexto),
+tope 50k inline / 5M export, floats enteros → int (códigos PT sin `.0`). `get_data_model_measures`
+ahora devuelve `{measures, diagnostic}` distinguiendo *sin medidas* de *sin modelo*.
+Verificado E2E: **BD del MULTIFORMATO (9.033×97 ≈ 876k celdas) exportada en 2,0 s**, suma
+fiel (export == COM). `test_bulk_tools.py` 43 checks + regresión sin cambios.
+
 ---
 
 ## 4. 🟠 No hay herramienta de recálculo y el cálculo se fuerza a MANUAL
@@ -180,6 +188,13 @@ compañero** que dispare el recálculo. El operador debe adivinar que hay que gu
    `Application.CalculationState == xlDone` (útil con dependencias/volátiles).
 3. Documentar de forma prominente el default de cálculo manual: sorprende ver
    fórmulas "en blanco/desactualizadas" hasta guardar y reabrir.
+
+**✅ RESUELTO (v1.4.0, 2026-07-24).** `recalculate(full, sheet, wait_async)` en
+`tools/workbook.py`: `Calculate` (sucias) / `CalculateFull` / `Worksheet.Calculate`.
+`wait_async` maneja la trampa CUBE (`#GETTING_DATA` con Manual): pone automático temporal
++ `CalculateUntilAsyncQueriesDone` y restaura Manual. Timeout 600s (un CalculateFull grande
+no es cuelgue). Verificado: en Manual, fórmula desactualizada (A3=5) → `recalculate()` →
+A3=13; restaura Manual tras `wait_async`. Docstring advierte el default manual.
 
 ---
 
@@ -211,6 +226,30 @@ Los acentos (`PERÚ`, `Línea`) se vieron corruptos (`PER�`) **solo** al leer 
 `pyxlsb`/Bash en Latin-1. El MCP (`read_range`) devolvió el Unicode correcto. Se anota
 para no perseguir un falso bug: es un punto a favor del MCP, la corrupción estaba en la
 ruta alternativa fuera de él.
+
+---
+
+## Backlog (ideas evaluadas, NO abordar sin diseño propio)
+
+### `refresh_all` orquestador (PQ → Data Model → pivots)
+
+Sugerido en la revisión del spec del paquete #3+#4 (2026-07-24). **Rechazado para ese
+paquete** por estas razones, que cualquier implementación futura debe resolver:
+
+- **Footgun en nuestro entorno:** los libros del trabajo tienen conexiones a fuentes
+  corporativas inaccesibles desde el PC personal. Refrescar a ciegas cuelga o, peor,
+  destruye los valores cacheados (en la sesión Nutribella se evitó refrescar a propósito).
+- La detección de "terminó" difiere por tipo (`BackgroundQuery`, refresh asíncrono del
+  modelo, `CalculateUntilAsyncQueriesDone`) y el refresh es de las zonas COM más
+  propensas a cuelgues (quirks Mashup/QueryTables en 2013).
+- Diseño mínimo requerido: **dry-run** que liste conexiones y su alcanzabilidad ANTES de
+  tocar nada, timeouts por paso, política skip-on-fail explícita, y resumen por conexión.
+
+### Re-assert defensivo de `ScreenUpdating` (descartado como feature)
+
+`ScreenUpdating=False`/`EnableEvents=False` ya se fijan globalmente en `session.start()`
+— no hay ganancia por-operación (sugerencia evaluada y descartada; solo se acepta un
+re-assert de 1 línea en operaciones largas como blindaje contra macros que lo reactiven).
 
 ---
 

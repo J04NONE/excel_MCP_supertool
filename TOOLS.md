@@ -1,4 +1,4 @@
-# Referencia de Tools (48)
+# Referencia de Tools (51)
 
 Convenciones:
 - Todas las tools que tocan Excel lo arrancan solas si no está corriendo (lazy init).
@@ -19,7 +19,8 @@ Convenciones:
 |---|---|---|---|
 | `open_workbook` | `path`, `read_only=False`, `password=None`, `enable_macros=False` | hojas + metadata | Con `enable_macros=False` las macros NO se cargan (seguro para .xlsm ajenos). Para `execute_vba_macro` abrir con `True` |
 | `save_workbook` | `path=None` | `{saved, path}` | Sin `path` → Save; con `path` → SaveAs (formato por extensión: .xlsx/.xlsm/.xlsb/.xls) |
-| `close_workbook` | `save_changes=False` | `{closed, saved}` | Por defecto NO guarda |
+| `close_workbook` | `save_changes=False` | `{closed, saved, temp_cleaned}` | Por defecto NO guarda. Borra la copia saneada si el libro se abrió con saneo |
+| `recalculate` | `full=False`, `sheet=None`, `wait_async=False` | `{calculated, mode, calculation_state}` | El MCP fuerza cálculo MANUAL al abrir: sin esto las fórmulas nuevas no evalúan. `full` = CalculateFull; `sheet` = solo esa hoja; `wait_async` = automático temporal + espera queries CUBE (`#GETTING_DATA`). Timeout 600s |
 | `list_sheets` | — | `[{name, type}]` | |
 | `create_sheet` | `name`, `after=None` | `{name, index}` | Sin `after` la agrega al final |
 | `delete_sheet` | `name` | `{deleted}` | Irreversible dentro del libro |
@@ -29,12 +30,21 @@ Convenciones:
 
 | Tool | Argumentos | Devuelve | Notas |
 |---|---|---|---|
-| `read_range` | `sheet`, `range_addr` | matriz 2D de valores | Fechas → ISO 8601 |
+| `read_range` | `sheet`, `range_addr` | matriz 2D de valores | Fechas → ISO 8601. **Máx 50.000 celdas** inline; para rangos mayores usa `export_sheet(..., range_addr=...)` |
 | `write_range` | `sheet`, `range_addr`, `values` | confirmación | `range_addr` puede ser solo la esquina (`"A1"`); el tamaño lo da `values` |
 | `read_formulas` | `sheet`, `range_addr`, `local=False` | matriz 2D de fórmulas | Celdas sin fórmula devuelven su valor. `local=True` → `=SUMA(...)` (idioma UI) |
 | `write_formulas` | `sheet`, `range_addr`, `formulas`, `local=False` | confirmación | `local=False` espera inglés (`=SUM`), portable entre idiomas |
 | `apply_format` | `sheet`, `range_addr`, `bold`, `italic`, `font_size`, `font_color_rgb`, `fill_color_rgb`, `number_format` | confirmación | Colores hex `"RRGGBB"`; `number_format` ej. `"#,##0.00"`, `"dd/mm/yyyy"` |
 | `auto_fit_columns` | `sheet`, `range_addr=None` | confirmación | Sin rango ajusta todo el UsedRange |
+
+## Lectura masiva
+
+Para tablas/hojas grandes sin quemar el contexto del agente. Fast path COM: **una llamada `.Value` por bloque** (no celda a celda). Los floats de valor entero se colapsan a int (un código PT `5060094` NO sale como `5060094.0`).
+
+| Tool | Argumentos | Devuelve | Notas |
+|---|---|---|---|
+| `read_table` | `table_name`, `dest=None` | inline `{table, sheet, headers, rows, row_count, col_count}` o `{file, rows, cols, headers, sample}` | Busca el `ListObject` por nombre (case-insensitive) en todas las hojas. Sin `dest`: inline hasta 50.000 celdas (`rows` = matriz); si excede → error pidiendo `dest`. Con `dest` (.csv/.tsv/.json): escribe archivo (`rows`/`cols` = conteos, `sample` = 5 filas) |
+| `export_sheet` | `sheet`, `dest`, `sample_rows=5`, `range_addr=None` | `{file, rows, cols, range, sample}` | Vuelca `UsedRange` (o `range_addr`) en 1 llamada COM. Techo 5M celdas. **`UsedRange` puede NO empezar en A1** → usa `range` para mapear offsets. `.csv`/`.tsv`/`.json`; CSV/TSV en utf-8-sig |
 
 ## VBA
 
@@ -64,7 +74,7 @@ Convenciones:
 | `list_data_model_tables` | — | `[{name, record_count, source}]` | Tablas del Data Model |
 | `add_table_to_data_model` | `sheet`, `range_addr`, `table_name` | tabla + estado | Convierte un rango en ListObject y lo carga al modelo. Base del ELT. Requiere libro guardado |
 | `evaluate_dax_query` | `dax`, `max_rows=1000` | `{columns, rows, row_count, truncated}` | Ej. `EVALUATE 'Tabla'` o `EVALUATE SUMMARIZECOLUMNS(...)`. Vía ADO in-process (†PP) |
-| `get_data_model_measures` | — | `[{name, expression, table}]` | Medidas DAX; fallback DMV si el host no expone `ModelMeasures` |
+| `get_data_model_measures` | — | `{measures: [{name, expression, table}], diagnostic}` | Medidas DAX; fallback DMV si el host no expone `ModelMeasures`. `diagnostic` distingue *sin medidas* (modelo presente, agregaciones implícitas) de *sin modelo* (`model_present`, `model_tables`, `note`) |
 | `refresh_data_model` | — | `{refreshed, tables}` | Refresca todas las conexiones del modelo |
 
 (†PP) `evaluate_dax_query` usa el proveedor **MSOLAP** vía la conexión ADO del modelo. En **Excel 2013 Professional Plus (MSI)** MSOLAP está registrado a nivel máquina y funciona directo. En hosts **Office Click-to-Run** (dev 2016+) MSOLAP puede no estar visible para el proceso; entonces la tool **falla rápido con un mensaje accionable** (no cuelga). Alternativa portable sin MSOLAP: `create_pivot_table` agrega contra el mismo modelo.

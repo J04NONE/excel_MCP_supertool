@@ -75,6 +75,12 @@ abierto), error claro "no hay workbook abierto".
 `Calculate`, `CalculateFull`, `CalculateUntilAsyncQueriesDone` (2010+),
 `CalculationState` (2007+): todos OK en 2013.
 
+### Hardening defensivo (opcional, 1 línea)
+
+Re-asertar `app.ScreenUpdating = False` al inicio de la operación: la sesión ya lo fija
+globalmente en `start()`, pero una macro previa (`execute_vba_macro`) o versiones nuevas
+de Excel pueden haberlo reactivado. No es feature: es blindaje barato.
+
 ---
 
 ## Componente 2: `read_table` — en `tools/bulk.py` (módulo NUEVO)
@@ -130,20 +136,25 @@ convención que `export_sheet`). Las dos formas se distinguen por la presencia d
 ### Firma del tool
 
 ```python
-export_sheet(sheet: str, dest: str, sample_rows: int = 5) -> dict
+export_sheet(sheet: str, dest: str, sample_rows: int = 5, range_addr: Optional[str] = None) -> dict
 ```
 
 `dest` es OBLIGATORIO (el propósito del tool es volcar a archivo sin quemar contexto).
 
 ### Comportamiento
 
-1. `ur = ws.UsedRange`; `n_rows/n_cols` por `Rows.Count/Columns.Count` (sin leer).
-2. **Techo (corrección #5):** `MAX_EXPORT_CELLS = 5_000_000`. Si excede → error
+1. Si `range_addr` es `None`: `ur = ws.UsedRange`; si se pasa (ej. `"B5:X9000"`):
+   `ur = ws.Range(range_addr)`. La clave `range` en la respuesta refleja el rango real
+   usado (`ur.Address`).
+2. `n_rows/n_cols` por `Rows.Count/Columns.Count` (sin leer datos).
+3. **Techo (corrección #5):** `MAX_EXPORT_CELLS = 5_000_000`. Si excede → error
    accionable ("exporta por rangos con read_range o divide la hoja"). La BD real del
    multiformato (9.036×97 ≈ 876k celdas) pasa holgada.
-3. `ur.Value` en **1 llamada COM** (fast path).
-4. Escribir `dest` según extensión: `.csv` o `.json` (otra extensión → error).
-5. Respuesta: `{"file", "rows", "cols", "range", "sample"}` donde `range` es
+4. `ur.Value` en **1 llamada COM** (fast path).
+5. Escribir `dest` según extensión: `.csv`, `.tsv` o `.json` (otra extensión → error).
+   `.tsv` usa `delimiter="\t"` con el mismo writer y utf-8-sig; evita el infierno de
+   comas en contenido y es común en análisis de datos.
+6. Respuesta: `{"file", "rows", "cols", "range", "sample"}` donde `range` es
    `ur.Address` (ej. `"$C$4:$CU$9036"`).
 
 ### Reglas de serialización (ambos tools de bulk)
@@ -195,8 +206,9 @@ Ahora:
 3. `recalculate` usa la constante de timeout larga existente (`LONG_OP_TIMEOUT`/600 s);
    si hoy vive en otro módulo, importarla, no duplicarla.
 4. Bump de versión en `server.py`: `1.3.0 → 1.4.0`.
-5. Actualizar `TOOLS.md` (4 tools nuevos/cambiados) y `MANUAL.md` si aplica; anotar el
-   cambio de forma de `get_data_model_measures`.
+5. Actualizar `TOOLS.md` (5 tools nuevos/cambiados: recalculate, read_table,
+   export_sheet, get_data_model_measures, read_range con tope) y `MANUAL.md` si aplica;
+   anotar el cambio de forma de `get_data_model_measures` y el tope de `read_range`.
 6. Marcar #3 y #4 como resueltos en `LIMITACIONES_MCP.md` al cerrar, con evidencia.
 
 ## Plan de pruebas
@@ -215,8 +227,13 @@ Ahora:
 6. Bordes: tabla vacía (`rows=[]`), rango 1×1 normalizado.
 7. `export_sheet`: csv y json de una hoja con `UsedRange` que NO empieza en A1
    (escribir desde C4) → `range` correcto, offsets verificables.
-8. `get_data_model_measures`: en libro sin modelo → `model_present: false` (sin explotar).
-9. Limpieza total (sin EXCEL.EXE huérfanos, sin archivos temp).
+8. `export_sheet` con `.tsv`: delimitador tab real en el archivo, utf-8-sig.
+9. `export_sheet` con `range_addr="B5:D20"`: exporta SOLO ese rango; `range` refleja
+   `$B$5:$D$20`; extensión no soportada (.xlsx) → error accionable.
+10. Tope en `read_range`: rango > 50k celdas → error accionable que menciona
+    `export_sheet`; rango chico sigue devolviendo `list` (sin cambio de forma).
+11. `get_data_model_measures`: en libro sin modelo → `model_present: false` (sin explotar).
+12. Limpieza total (sin EXCEL.EXE huérfanos, sin archivos temp).
 
 ### E2E contra archivos reales de la carpeta Nutribella
 
@@ -231,10 +248,25 @@ Ahora:
 
 `test_sanitize.py`, `test_guard_wedge.py`, `test_hardening.py` — todos verdes.
 
+## Cambio añadido: tope 50k celdas en `read_range` (tool existente en `tools/cells.py`)
+
+`read_range` hoy no tiene tope. Un agente puede pedir 500k celdas inline y reventar
+el contexto del LLM. Se le aplica el mismo `MAX_INLINE_CELLS = 50_000`:
+
+- Si el rango solicitado excede 50.000 celdas → **error accionable** que apunta a
+  `export_sheet(range_addr=...)` como alternativa.
+- Esto mantiene `read_range` predecible para lecturas pequeñas/medianas y educa al
+  agente sobre el tool correcto para exportar rangos grandes.
+- **No cambia** el tipo de retorno de `read_range` (sigue siendo `list`).
+- El cambio de comportamiento es explícito y rompe a agentes que hoy dependen de
+  leer rangos enormes inline; se documenta en TOOLS.md.
+
 ## Fuera de alcance (YAGNI)
 
 - Export a .xlsx/parquet; filtros/proyecciones en read_table; export de múltiples hojas
-  en una llamada; streaming; sanitización CSV-injection (datos propios, uso analítico).
+  en una llamada; streaming; sanitización CSV-injection (datos propios, uso analítico);
+  `refresh_all` orquestador (requiere diseño propio con timeouts, skip-on-fail y dry-run;
+  ver backlog en LIMITACIONES_MCP.md).
 
 ## Riesgos aceptados
 

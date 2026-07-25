@@ -9,6 +9,7 @@ from ..utils.excel_utils import (
     normalize_matrix,
     target_range,
 )
+from .bulk import MAX_INLINE_CELLS
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +17,9 @@ logger = logging.getLogger(__name__)
 def register(mcp, session, run):
     @mcp.tool()
     def read_range(sheet: str, range_addr: str) -> list:
-        """Leer VALORES de un rango (ej: sheet='Hoja1', range_addr='A1:C10')."""
+        """Leer VALORES de un rango (ej: sheet='Hoja1', range_addr='A1:C10').
+        Maximo 50.000 celdas inline; para rangos mayores usa
+        export_sheet(sheet, dest, range_addr=...)."""
         return run(_read_range, session, sheet, range_addr)
 
     @mcp.tool()
@@ -67,7 +70,14 @@ def _get_sheet(session, sheet: str):
 
 def _read_range(session, sheet: str, range_addr: str) -> list:
     ws = _get_sheet(session, sheet)
-    return matrix_to_jsonable(ws.Range(range_addr).Value)
+    rng = ws.Range(range_addr)
+    n_cells = int(rng.Rows.Count) * int(rng.Columns.Count)
+    if n_cells > MAX_INLINE_CELLS:
+        raise ValueError(
+            f"Rango {range_addr} tiene {n_cells} celdas (> {MAX_INLINE_CELLS}). "
+            "Usa export_sheet(sheet, dest, range_addr=...) para volcarlo a archivo."
+        )
+    return matrix_to_jsonable(rng.Value)
 
 
 def _write_range(session, sheet: str, range_addr: str, values: list) -> str:

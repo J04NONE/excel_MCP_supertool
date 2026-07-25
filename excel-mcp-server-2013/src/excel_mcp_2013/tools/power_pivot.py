@@ -32,8 +32,10 @@ def register(mcp, session, run):
         return run(_evaluate_dax_query, session, dax, max_rows)
 
     @mcp.tool()
-    def get_data_model_measures() -> list:
-        """Listar las medidas del Data Model con su expresion DAX."""
+    def get_data_model_measures() -> dict:
+        """Medidas del Data Model con su expresion DAX. Devuelve
+        {measures, diagnostic}: diagnostic distingue 'sin medidas' (modelo
+        presente, medidas implicitas) de 'sin modelo'."""
         return run(_get_data_model_measures, session)
 
     @mcp.tool()
@@ -140,13 +142,23 @@ def _evaluate_dax_query(session, dax: str, max_rows: int) -> dict:
     return {"columns": columns, "rows": rows, "row_count": len(rows), "truncated": truncated}
 
 
-def _get_data_model_measures(session) -> list:
+def _get_data_model_measures(session) -> dict:
     wb = get_active_workbook(session)
-    model = _get_model(wb)
-
-    # Via COM (Excel 2016+): ModelMeasures expone nombre + formula directamente
+    diagnostic = {"model_present": False, "model_tables": 0}
     try:
-        measures = []
+        model = _get_model(wb)
+        diagnostic["model_present"] = True
+        try:
+            diagnostic["model_tables"] = int(model.ModelTables.Count)
+        except Exception:
+            pass
+    except Exception as e:
+        diagnostic["note"] = f"Sin Data Model accesible: {e}"
+        return {"measures": [], "diagnostic": diagnostic}
+
+    measures = []
+    try:
+        # Via COM (Excel 2016+): ModelMeasures expone nombre + formula directamente
         for m in model.ModelMeasures:
             measures.append(
                 {
@@ -155,20 +167,29 @@ def _get_data_model_measures(session) -> list:
                     "table": str(m.AssociatedTable.Name),
                 }
             )
-        return measures
     except Exception:
         logger.debug("ModelMeasures no disponible (host 2013); fallback DMV")
+        try:
+            # Fallback DMV (funciona tambien en 2013): medidas visibles del cubo
+            result = _evaluate_dax_query(
+                session,
+                "SELECT [MEASURE_NAME], [EXPRESSION], [MEASURE_CAPTION] "
+                "FROM $SYSTEM.MDSCHEMA_MEASURES WHERE [MEASURE_IS_VISIBLE]",
+                1000,
+            )
+            measures = [
+                {"name": r[0], "expression": r[1], "caption": r[2]}
+                for r in result["rows"]
+            ]
+        except Exception as e:
+            diagnostic["note"] = f"ModelMeasures y DMV fallaron: {e}"
 
-    # Fallback DMV (funciona tambien en 2013): medidas visibles del cubo Model
-    result = _evaluate_dax_query(
-        session,
-        "SELECT [MEASURE_NAME], [EXPRESSION], [MEASURE_CAPTION] "
-        "FROM $SYSTEM.MDSCHEMA_MEASURES WHERE [MEASURE_IS_VISIBLE]",
-        1000,
-    )
-    return [
-        {"name": r[0], "expression": r[1], "caption": r[2]} for r in result["rows"]
-    ]
+    if not measures and diagnostic["model_tables"] > 0 and "note" not in diagnostic:
+        diagnostic["note"] = (
+            f"Modelo presente con {diagnostic['model_tables']} tablas y 0 medidas "
+            "explicitas: probablemente pivots con agregaciones implicitas."
+        )
+    return {"measures": measures, "diagnostic": diagnostic}
 
 
 def _add_table_to_data_model(session, sheet: str, range_addr: str, table_name: str) -> dict:

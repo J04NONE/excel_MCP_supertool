@@ -5,9 +5,12 @@ import os
 from typing import Optional
 
 from ..utils.excel_utils import (
+    LONG_OP_TIMEOUT,
+    XL_CALCULATION_AUTOMATIC,
     XL_CELL_TYPE_FORMULAS,
     XL_FILE_FORMATS,
     get_active_workbook,
+    get_sheet,
 )
 
 logger = logging.getLogger(__name__)
@@ -23,6 +26,20 @@ def register(mcp, session, run):
     def close_workbook(save_changes: bool = False) -> dict:
         """Cerrar el workbook activo (por defecto SIN guardar cambios)."""
         return run(_close_workbook, session, save_changes)
+
+    @mcp.tool()
+    def recalculate(full: bool = False, sheet: Optional[str] = None,
+                    wait_async: bool = False) -> dict:
+        """Recalcular el workbook activo (el MCP fuerza calculo MANUAL al abrir;
+        sin esto las formulas nuevas no evaluan hasta guardar/reabrir).
+
+        default: solo celdas sucias. full=True: todo desde cero.
+        sheet='X': solo esa hoja (ignora full). wait_async=True: secuencia para
+        formulas CUBE (#GETTING_DATA): pone calculo automatico temporal +
+        CalculateUntilAsyncQueriesDone, restaura Manual al final (ignora sheet).
+        Puede tardar minutos en libros grandes (timeout 600s)."""
+        return run(_recalculate, session, full, sheet, wait_async,
+                   timeout=LONG_OP_TIMEOUT)
 
     @mcp.tool()
     def create_sheet(name: str, after: Optional[str] = None) -> dict:
@@ -58,12 +75,48 @@ def _save_workbook(session, path: Optional[str]) -> dict:
     return {"saved": True, "path": str(wb.FullName), "format": ext}
 
 
+def _recalculate(session, full: bool, sheet, wait_async: bool) -> dict:
+    app = session.get_application()
+    wb = get_active_workbook(session)  # error claro si no hay libro abierto
+    try:
+        app.ScreenUpdating = False  # blindaje: una macro previa pudo reactivarlo
+    except Exception:
+        pass
+    if wait_async:
+        # CUBE en Manual queda #GETTING_DATA aunque se espere: automatico temporal.
+        prev = app.Calculation
+        app.Calculation = XL_CALCULATION_AUTOMATIC
+        try:
+            app.CalculateFull()
+            app.CalculateUntilAsyncQueriesDone()
+        finally:
+            app.Calculation = prev
+        mode = "async_cube"
+    elif sheet is not None:
+        get_sheet(wb, sheet).Calculate()
+        mode = f"sheet:{sheet}"
+    elif full:
+        app.CalculateFull()
+        mode = "full"
+    else:
+        app.Calculate()
+        mode = "dirty"
+    state_map = {0: "done", 1: "calculating", 2: "pending"}
+    try:
+        state = state_map.get(int(app.CalculationState), "unknown")
+    except Exception:
+        state = "unknown"
+    return {"calculated": True, "mode": mode, "calculation_state": state}
+
+
 def _close_workbook(session, save_changes: bool) -> dict:
     wb = get_active_workbook(session)
     name, full_name = str(wb.Name), str(wb.FullName)
     wb.Close(SaveChanges=save_changes)
     session._workbooks.pop(full_name, None)
-    return {"closed": name, "saved": save_changes}
+    # Si el libro era una copia temporal saneada, borrarla ya (no esperar a close_excel).
+    discarded_temp = session.discard_temp_copy(full_name)
+    return {"closed": name, "saved": save_changes, "temp_cleaned": discarded_temp}
 
 
 def _create_sheet(session, name: str, after: Optional[str]) -> dict:

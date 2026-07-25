@@ -198,8 +198,11 @@ class SessionManager:
                     self._app.AutomationSecurity = prev_security
                 except Exception:
                     pass
-        # Se rastrea por la ruta ORIGINAL aunque se haya abierto una copia saneada.
-        self._workbooks[path] = wb
+        # Se rastrea por wb.FullName (la ruta REALMENTE abierta: la copia
+        # temporal si hubo saneo, o el original). Asi close_workbook —que hace
+        # pop por FullName— encuentra la entrada, y open_workbook devuelve el
+        # path original via _last_open_info.
+        self._workbooks[str(wb.FullName)] = wb
         self._last_open_info = {"path": path, **sanitize_info}
         self._apply_manual_calculation()
         logger.info(
@@ -277,6 +280,26 @@ class SessionManager:
             except OSError:
                 pass
         self._temp_copies.clear()
+
+    def discard_temp_copy(self, full_name: str) -> bool:
+        """Borrar la copia temporal saneada de un libro que se cierra individualmente.
+
+        `full_name` es wb.FullName; si corresponde a una copia saneada, se borra
+        del disco y del registro. Evita que se acumulen copias en %TEMP% cuando
+        se abren/cierran varios libros de riesgo sin cerrar Excel. Devuelve True
+        si borro algo.
+        """
+        if full_name in self._temp_copies:
+            try:
+                os.remove(full_name)
+            except OSError:
+                pass
+            try:
+                self._temp_copies.remove(full_name)
+            except ValueError:
+                pass
+            return True
+        return False
 
     def _force_gc(self) -> None:
         """Force garbage collection so COM references are released."""

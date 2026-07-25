@@ -72,7 +72,7 @@ mcp = FastMCP(
         "para armar; save_workbook para persistir. El codigo M generado debe validarse "
         "con validate_m_code (Excel 2013 usa el motor M v2.62 legacy)."
     ),
-    version="1.3.0",
+    version="1.4.0",
     lifespan=_lifespan,
 )
 
@@ -284,6 +284,7 @@ def close_excel() -> dict:
 # =============================================================================
 
 from .tools import (  # noqa: E402
+    bulk,
     cells,
     discovery,
     documentation,
@@ -298,6 +299,7 @@ from .tools import (  # noqa: E402
 )
 
 workbook.register(mcp, session, run_with_excel)
+bulk.register(mcp, session, run_with_excel)
 cells.register(mcp, session, run_with_excel)
 vba.register(mcp, session, run_with_excel)
 power_query.register(mcp, session, run_with_excel)
