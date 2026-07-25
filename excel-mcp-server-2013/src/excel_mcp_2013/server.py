@@ -166,22 +166,54 @@ def open_workbook(
     read_only: bool = False,
     password: Optional[str] = None,
     enable_macros: bool = False,
+    sanitize_names: str = "auto",
 ) -> dict:
     """Abrir un workbook (.xlsx/.xlsm/.xlsb). Por seguridad las macros NO se
-    habilitan al abrir salvo enable_macros=True (necesario para execute_vba_macro)."""
-    return run_with_excel(_open_workbook_impl, path, read_only, password, enable_macros)
+    habilitan al abrir salvo enable_macros=True (necesario para execute_vba_macro).
+
+    sanitize_names (auto|always|never): en 'auto' abre una copia temporal sin
+    los nombres definidos ROTOS cuando detecta riesgo (OOXML con vinculos
+    externos + nombres #REF!), evitando el cuelgue del dialogo 'Conflicto de
+    nombres'. El archivo original nunca se modifica; la respuesta incluye
+    'sanitized' cuando ocurrio."""
+    return run_with_excel(
+        _open_workbook_impl, path, read_only, password, enable_macros, sanitize_names
+    )
 
 
-def _open_workbook_impl(path: str, read_only: bool, password: Optional[str], enable_macros: bool) -> dict:
-    wb = session.open_workbook(path, read_only, password, enable_macros)
+def _open_workbook_impl(
+    path: str,
+    read_only: bool,
+    password: Optional[str],
+    enable_macros: bool,
+    sanitize_names: str,
+) -> dict:
+    wb = session.open_workbook(path, read_only, password, enable_macros, sanitize_names)
     sheets = [{"name": ws.Name, "type": "worksheet"} for ws in wb.Worksheets]
-    return {
-        "path": str(wb.FullName),
+    info = session.last_open_info()
+    result = {
+        # Ruta ORIGINAL solicitada (si hubo saneo, wb.FullName seria la copia temporal).
+        "path": info.get("path", str(wb.FullName)),
         "sheets": sheets,
         "sheet_count": len(sheets),
         "read_only": bool(wb.ReadOnly),
         "macros_enabled": enable_macros,
     }
+    if info.get("sanitized"):
+        result["sanitized"] = {
+            "definednames_removed": info.get("definednames_removed"),
+            "external_links": info.get("external_links"),
+            "note": "Se abrio una COPIA saneada para evitar el cuelgue por "
+                    "'Conflicto de nombres'. El archivo original NO fue modificado. "
+                    "Los valores cacheados se conservan; para refrescar formulas "
+                    "externas, abrir los libros de origen.",
+        }
+    elif info.get("sanitize_error"):
+        result["sanitize_warning"] = (
+            f"Archivo de riesgo pero el saneo fallo ({info['sanitize_error']}); "
+            "se abrio el original (puede colgar por 'Conflicto de nombres')."
+        )
+    return result
 
 
 @mcp.tool()

@@ -14,6 +14,8 @@ from typing import Optional
 import psutil
 import win32com.client
 
+from .utils.workbook_sanitize import make_sanitized_copy, scan_definedname_risk
+
 logger = logging.getLogger(__name__)
 
 # Constantes XlCalculation (Excel 2013+)
@@ -29,6 +31,8 @@ class SessionManager:
         self._excel_create_time: Optional[float] = None
         self._visible = visible
         self._workbooks = {}  # path -> workbook reference
+        self._temp_copies = []  # copias saneadas a borrar en close()
+        self._last_open_info = {}  # metadatos del ultimo open (p.ej. saneo)
 
     def start(self) -> None:
         """Initialize a NEW Excel application instance.
@@ -58,6 +62,12 @@ class SessionManager:
             self._app.ScreenUpdating = False
             self._app.EnableEvents = False
             self._app.UserControl = False
+            # Suprime el prompt "actualizar vinculos" al abrir libros con
+            # referencias externas. Sin esto, abrir un libro con vinculos a
+            # origenes inaccesibles CUELGA el STA >120s (ver open_workbook,
+            # UpdateLinks=0). DisplayAlerts=False solo no basta: Excel intenta
+            # RESOLVER los vinculos en segundo plano igual.
+            self._app.AskToUpdateLinks = False
             # NOTA: Application.Calculation NO se puede asignar sin un workbook
             # abierto (com_error -2146827284); se aplica en open_workbook().
         except Exception:
@@ -111,18 +121,49 @@ class SessionManager:
         read_only: bool = False,
         password: Optional[str] = None,
         enable_macros: bool = False,
+        sanitize_names: str = "auto",
     ):
         """Open a workbook and track it.
 
         enable_macros=False (default) abre con msoAutomationSecurityForceDisable:
         las macros del libro NO se cargan (inspeccion segura de .xlsm ajenos).
         Para ejecutar macros hay que reabrir con enable_macros=True.
+
+        sanitize_names (auto|always|never): evita el cuelgue del dialogo
+        'Conflicto de nombres' abriendo una copia temporal sin los nombres
+        definidos ROTOS. 'auto' solo lo hace si el escaneo estatico detecta
+        riesgo (OOXML + vinculos externos + nombres rotos). El original nunca
+        se modifica. Ver utils/workbook_sanitize.
         """
         if not self._app:
             self.start()
         path = os.path.abspath(path)
         if not os.path.exists(path):
             raise FileNotFoundError(f"Workbook no encontrado: {path}")
+
+        # --- Pre-vuelo: decidir si abrir una copia saneada (sin COM) ---
+        open_target = path
+        sanitize_info = {"sanitized": False}
+        if sanitize_names != "never":
+            try:
+                risk = scan_definedname_risk(path)
+                if sanitize_names == "always" or risk.get("risky"):
+                    tmp, removed = make_sanitized_copy(path)
+                    self._temp_copies.append(tmp)
+                    open_target = tmp
+                    sanitize_info = {
+                        "sanitized": True,
+                        "definednames_removed": removed,
+                        "external_links": risk.get("external_links", 0),
+                        "reason": "nombres definidos rotos + vinculos externos "
+                                  "(evita cuelgue del dialogo 'Conflicto de nombres')",
+                    }
+            except Exception as e:
+                # Si el saneo falla en un archivo de riesgo, avisar y seguir con
+                # el original (el caller tiene timeout; nunca colgar en silencio).
+                logger.warning("Saneo de nombres fallo para %s: %s", path, e)
+                sanitize_info = {"sanitized": False, "sanitize_error": repr(e)}
+
         # msoAutomationSecurityLow=1 (macros activas), ForceDisable=3
         automation_security = 1 if enable_macros else 3
         try:
@@ -132,12 +173,17 @@ class SessionManager:
             prev_security = None
             logger.warning("No se pudo fijar AutomationSecurity: %s", e)
         try:
-            kwargs = {"ReadOnly": read_only}
+            # UpdateLinks=0: NO actualizar/resolver referencias externas al abrir
+            # (los origenes suelen ser rutas locales/red del autor, inaccesibles).
+            # Higiene contra el prompt de vinculos; el fix del cuelgue real por
+            # 'Conflicto de nombres' es el saneo previo (open_target). Los valores
+            # cacheados se conservan; para refrescarlos, abrir los libros de origen.
+            kwargs = {"ReadOnly": read_only, "UpdateLinks": 0}
             if password is not None:
                 kwargs["Password"] = password
-            wb = self._app.Workbooks.Open(path, **kwargs)
+            wb = self._app.Workbooks.Open(open_target, **kwargs)
         except Exception:
-            logger.exception("Fallo abriendo workbook: %s", path)
+            logger.exception("Fallo abriendo workbook: %s", open_target)
             raise
         finally:
             if prev_security is not None:
@@ -145,10 +191,19 @@ class SessionManager:
                     self._app.AutomationSecurity = prev_security
                 except Exception:
                     pass
+        # Se rastrea por la ruta ORIGINAL aunque se haya abierto una copia saneada.
         self._workbooks[path] = wb
+        self._last_open_info = {"path": path, **sanitize_info}
         self._apply_manual_calculation()
-        logger.info("Workbook abierto: %s (read_only=%s)", path, read_only)
+        logger.info(
+            "Workbook abierto: %s (read_only=%s, saneado=%s)",
+            path, read_only, sanitize_info.get("sanitized"),
+        )
         return wb
+
+    def last_open_info(self) -> dict:
+        """Metadatos del ultimo open_workbook (incluye info de saneo)."""
+        return dict(self._last_open_info)
 
     def close(self) -> None:
         """Close Excel and cleanup COM."""
@@ -174,6 +229,16 @@ class SessionManager:
             self._app = None
             self._force_gc()
             self._kill_if_alive()
+            self._cleanup_temp_copies()
+
+    def _cleanup_temp_copies(self) -> None:
+        """Borrar las copias temporales saneadas creadas en open_workbook."""
+        for tmp in self._temp_copies:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+        self._temp_copies.clear()
 
     def _force_gc(self) -> None:
         """Force garbage collection so COM references are released."""
