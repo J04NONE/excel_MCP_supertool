@@ -26,6 +26,7 @@ venv_*/
 # Datos de trabajo de informes (no código fuente)
 # =============================================================================
 /Informe ventas Nutribella paises/
+*.bas
 
 # =============================================================================
 # Documentos de planificación personal
