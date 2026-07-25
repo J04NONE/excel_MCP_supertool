@@ -15,7 +15,7 @@ import anyio
 import pywintypes
 from fastmcp import FastMCP
 
-from .com_guard import ExcelWriteGuard
+from .com_guard import ExcelWriteGuard, STAWedgedError
 from .orphan_guard import OrphanProcessGuard
 from .session import SessionManager
 from .utils.com_errors import ExcelCrashedError, is_dead_server, translate_com_error
@@ -24,6 +24,12 @@ logger = logging.getLogger(__name__)
 
 session = SessionManager()
 guard = ExcelWriteGuard()
+
+# Timeout dedicado (corto) para abrir libros: un open sano tarda pocos segundos;
+# uno que se pasa de esto casi siempre es un dialogo modal. Fallar en ~45s en vez
+# del default de 120s. La deteccion de dialogo (has_modal_dialog) hace fail-fast
+# a las llamadas SIGUIENTES sin esperar nada.
+OPEN_WORKBOOK_TIMEOUT = 45
 
 
 def _shutdown_sync() -> None:
@@ -125,6 +131,19 @@ def run_with_excel(func, *args, timeout: Optional[float] = None, **kwargs):
             )
         return result
 
+    # Fail-fast: si el STA esta ocupado en una tarea Y Excel muestra un dialogo
+    # modal, el STA esta bloqueado (el dialogo congela el hilo de Excel). No tiene
+    # sentido encolar y esperar el timeout completo: avisar ya. La deteccion es
+    # una senal POSITIVA (ventana de dialogo), asi que una tarea larga legitima
+    # —sin dialogo— sigue encolando normal.
+    info = guard.inflight_info()
+    if info is not None and session.has_modal_dialog():
+        raise STAWedgedError(
+            f"STA bloqueado: la operacion en curso ('{info['desc']}') lleva "
+            f"{info['elapsed']:.0f}s y Excel muestra un dialogo modal. "
+            "Corre close_excel para recuperar la sesion."
+        )
+
     try:
         return guard.execute(runner, timeout=timeout)
     except pywintypes.com_error as e:
@@ -177,7 +196,8 @@ def open_workbook(
     nombres'. El archivo original nunca se modifica; la respuesta incluye
     'sanitized' cuando ocurrio."""
     return run_with_excel(
-        _open_workbook_impl, path, read_only, password, enable_macros, sanitize_names
+        _open_workbook_impl, path, read_only, password, enable_macros, sanitize_names,
+        timeout=OPEN_WORKBOOK_TIMEOUT,
     )
 
 
@@ -236,14 +256,22 @@ def close_excel() -> dict:
     en 30s, mata el proceso por PID (psutil, sin COM)."""
     if session.get_application() is None and session.get_pid() is None:
         return {"closed": False, "reason": "Excel no estaba iniciado"}
+    # Si hay un dialogo modal, el STA esta bloqueado y el Quit cooperativo
+    # colgaria: matar por PID de una (sin esperar 30s). psutil no necesita COM.
+    if session.has_modal_dialog():
+        pid = session.get_pid()
+        if pid:
+            OrphanProcessGuard.kill_process(pid)
+        logger.warning("close_excel: dialogo modal detectado; Excel PID %s matado directo", pid)
+        return {"closed": True, "method": "kill", "pid": pid, "reason": "dialogo modal"}
     try:
         guard.execute(session.close, timeout=30)
         return {"closed": True, "method": "cooperative"}
     except TimeoutError:
-        # STA bloqueado por una tarea colgada: el Quit cooperativo no puede
-        # correr. Matar por PID es seguro desde este thread (solo psutil).
-        # No tocamos _app aqui (afinidad COM): la proxima llamada lo limpia
-        # via is_alive() -> reset_after_crash() dentro del STA.
+        # STA bloqueado por una tarea colgada (sin dialogo visible): el Quit
+        # cooperativo no puede correr. Matar por PID es seguro desde este thread
+        # (solo psutil). No tocamos _app aqui (afinidad COM): la proxima llamada
+        # lo limpia via is_alive() -> reset_after_crash() dentro del STA.
         pid = session.get_pid()
         if pid:
             OrphanProcessGuard.kill_process(pid)

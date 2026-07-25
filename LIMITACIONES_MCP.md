@@ -14,7 +14,7 @@ Ruta del código: `excel-mcp-server-2013/src/excel_mcp_2013/`
 | # | Limitación | Impacto en la sesión | Estado |
 |---|------------|----------------------|--------|
 | 1 | `open_workbook` se cuelga: diálogo **"Conflicto de nombres"** por nombres definidos rotos (NO era update-links) | Bloqueó Excel 120 s; hubo que matar el proceso | ✅ **RESUELTO** (saneo auto) |
-| 2 | Una llamada COM colgada tumba TODA la sesión (STA único) | `get_session_info` también expiró; se perdió el libro abierto | 🟠 Mitigado (#1); arquitectura pendiente |
+| 2 | Una llamada COM colgada tumba TODA la sesión (STA único) | `get_session_info` también expiró; se perdió el libro abierto | ✅ **RESUELTO** (fail-fast por diálogo + kill inmediato + timeout dedicado) |
 | 3 | Sin lectura masiva de `.xlsb` / tabla por nombre / Data Model | Hubo que extraer con `pyxlsb` fuera del MCP | 🟠 Alta |
 | 4 | No hay herramienta de recálculo; cálculo forzado a MANUAL | Fórmulas no evaluaban hasta guardar+reabrir | 🟠 Alta |
 | 5 | Autoría de libros (hojas+estilos) inviable por COM en volumen | Se construyó con `openpyxl`, MCP solo validó | 🟡 Media (workflow) |
@@ -103,15 +103,32 @@ deja de esperar. Toda tarea encolada detrás hereda el bloqueo y expira una tras
 2. ✅ **Pre-vuelo estático sin COM (IMPLEMENTADO):** el archivo se inspecciona como ZIP
    antes de `Workbooks.Open` (vínculos externos + nombres rotos). Extensible a detectar
    otros perfiles de riesgo y devolver `warning` en la respuesta.
-3. ⬜ **Timeout dedicado y corto para `open_workbook`** (p. ej. 30 s vía el `timeout`
-   keyword que ya soporta `execute()`), para fallar rápido en vez de 120 s con OTROS
-   diálogos no previstos.
-4. ⬜ **Marcar el guard como "wedged".** Si un `execute()` expira, poner una bandera para
-   que las siguientes llamadas fallen inmediato con *"STA bloqueado — corré close_excel"*
-   en lugar de esperar 120 s cada una. (Sigue siendo la defensa clave para cualquier
-   diálogo modal futuro que no anticipemos con el pre-vuelo.)
-5. ⬜ Documentar que `close_excel` es todo-o-nada (un solo proceso Excel): matarlo cierra
-   también los libros sanos que estuvieran abiertos.
+3. ✅ **Timeout dedicado y corto para `open_workbook` (IMPLEMENTADO):**
+   `OPEN_WORKBOOK_TIMEOUT = 45 s` (vs 120 s default). Un open sano tarda segundos; pasarse
+   casi siempre es un diálogo. Acota la PRIMERA llamada colgada.
+4. ✅ **Fail-fast por detección de diálogo modal (IMPLEMENTADO, mejor que la "bandera"):**
+   en vez de una bandera basada en timeout (que daría falsos positivos con operaciones
+   lentas legítimas), se usa una **señal positiva**: `session.has_modal_dialog()` enumera
+   las ventanas del PID de Excel (clases `#32770` / `bosa_sdm_XL9`) — corre en el hilo del
+   caller, sin COM, así que funciona aunque el STA esté colgado. `run_with_excel` hace
+   **pre-vuelo**: si hay una tarea en curso (`guard.inflight_info()`) **y** un diálogo
+   modal, lanza `STAWedgedError` al instante (*"corré close_excel"*) en vez de esperar.
+   Verificado: la llamada siguiente falló en **0,00 s** en vez de esperar su timeout. Una
+   operación lenta SIN diálogo (p. ej. un recálculo) sigue encolándose normal (probado en
+   `test_hardening`).
+5. ✅ **`close_excel` mata de inmediato si detecta diálogo (IMPLEMENTADO):** antes esperaba
+   30 s al cierre cooperativo; ahora, si `has_modal_dialog()`, mata por PID directo
+   (verificado en **0,28 s**). Sigue siendo todo-o-nada (un solo proceso Excel): matarlo
+   cierra también los libros sanos abiertos — documentado en el docstring del tool.
+
+**Verificación (evidencia).** Nuevo `com_guard.inflight_info()` + `session.has_modal_dialog()`;
+`test_guard_wedge.py` (8 checks, Excel-free) + e2e contra el módulo real del server
+(diálogo detectado, fail-fast 0,00 s, kill 0,28 s, sin huérfanos) + `test_hardening.py`
+sin regresiones.
+
+> **Pendiente (menor):** el pre-vuelo cubre diálogos que abren ventana. Un bloqueo COM sin
+> ventana (raro) todavía esperaría el timeout de esa llamada antes de que el siguiente lo
+> note; `close_excel` sigue siendo la vía de escape universal.
 
 ---
 

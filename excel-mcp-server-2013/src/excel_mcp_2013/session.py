@@ -13,6 +13,8 @@ from typing import Optional
 
 import psutil
 import win32com.client
+import win32gui
+import win32process
 
 from .utils.workbook_sanitize import make_sanitized_copy, scan_definedname_risk
 
@@ -20,6 +22,11 @@ logger = logging.getLogger(__name__)
 
 # Constantes XlCalculation (Excel 2013+)
 XL_CALCULATION_MANUAL = -4135
+
+# Clases de ventana de dialogos MODALES de Excel/Office que bloquean el STA:
+# '#32770' = dialogo estandar de Windows (alertas, actualizar vinculos, etc.);
+# 'bosa_sdm_XL9' = dialogo propio de Office (p.ej. 'Conflicto de nombres').
+_MODAL_DIALOG_CLASSES = frozenset({"#32770", "bosa_sdm_XL9"})
 
 
 class SessionManager:
@@ -204,6 +211,37 @@ class SessionManager:
     def last_open_info(self) -> dict:
         """Metadatos del ultimo open_workbook (incluye info de saneo)."""
         return dict(self._last_open_info)
+
+    def has_modal_dialog(self) -> bool:
+        """True si el proceso Excel muestra un dialogo modal (que bloquea el STA).
+
+        Enumera las ventanas de nivel superior del PID de Excel buscando clases
+        de dialogo modal. Es una senal POSITIVA de bloqueo: no da falsos
+        positivos con operaciones COM lentas (esas no abren ventana). Corre en
+        CUALQUIER hilo (solo win32gui/psutil, sin COM), asi que funciona aunque
+        el hilo STA este colgado dentro de la llamada que abrio el dialogo.
+        """
+        pid = self._excel_pid
+        if not pid:
+            return False
+        found = []
+
+        def _cb(hwnd, _):
+            try:
+                if not win32gui.IsWindowVisible(hwnd):
+                    return
+                _, wpid = win32process.GetWindowThreadProcessId(hwnd)
+                if wpid == pid and win32gui.GetClassName(hwnd) in _MODAL_DIALOG_CLASSES:
+                    found.append(hwnd)
+            except Exception:
+                pass
+
+        try:
+            win32gui.EnumWindows(_cb, None)
+        except Exception as e:
+            logger.debug("EnumWindows fallo en has_modal_dialog: %s", e)
+            return False
+        return bool(found)
 
     def close(self) -> None:
         """Close Excel and cleanup COM."""
