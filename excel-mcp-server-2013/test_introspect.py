@@ -80,10 +80,10 @@ def test_puras():
     check("campos: sin claves de credencial",
           not any(k in campos for k in ("password", "pwd", "user id", "uid")))
 
-    con_pwd = _parse_conn_string('Provider=SQLOLEDB;Data Source=SRV;User ID=sa;Password=s3cr3t;')
+    con_pwd = _parse_conn_string('Provider=SQLOLEDB;Data Source=SRV;User ID=sa;Password=__TEST_ONLY__;')
     campos2 = _safe_conn_fields(con_pwd)
     check("campos: had_credentials True", campos2["had_credentials"] is True)
-    check("campos: password NO se propaga", "s3cr3t" not in str(campos2), str(campos2))
+    check("campos: password NO se propaga", "__TEST_ONLY__" not in str(campos2), str(campos2))
 
     comillas = _parse_conn_string('Provider=Mashup;Location="C:\\a;b\\x.xlsx";Extended Properties=""')
     check("parse: respeta comillas (; interno)",
