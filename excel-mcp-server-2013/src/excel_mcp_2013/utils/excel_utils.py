@@ -142,10 +142,49 @@ def chart_type_name(code) -> str:
         return f"unknown({code!r})"
 
 
+# Celdas en ERROR: COM las entrega como VT_ERROR, que pywin32 convierte a un int
+# con el scode 0x800A0000 | codigo (verificado: #N/A -> -2146826246 = 0x800A07FA).
+# Sin traducir, un #N/A saldria como el numero -2146826246 y contaminaria lecturas
+# y exports. Los valores numericos reales SIEMPRE llegan como float, nunca como int,
+# asi que la deteccion no tiene falsos positivos en la practica.
+XL_CVERR_NAMES = {
+    2000: "#NULL!",
+    2007: "#DIV/0!",
+    2015: "#VALUE!",
+    2023: "#REF!",
+    2029: "#NAME?",
+    2036: "#NUM!",
+    2042: "#N/A",
+    2043: "#GETTING_DATA",  # celda de cubo con la fuente OLAP inalcanzable
+}
+_CVERR_HI = 0x800A
+_CVERR_MIN, _CVERR_MAX = 2000, 2100
+
+
+def excel_error_name(value):
+    """Nombre del error de Excel si `value` es un VT_ERROR, si no None.
+
+    Fallback "Error <codigo>" para codigos del rango que no esten mapeados.
+    """
+    if not isinstance(value, int) or isinstance(value, bool):
+        return None
+    unsigned = value & 0xFFFFFFFF
+    if (unsigned >> 16) != _CVERR_HI:
+        return None
+    code = unsigned & 0xFFFF
+    if not (_CVERR_MIN <= code <= _CVERR_MAX):
+        return None
+    return XL_CVERR_NAMES.get(code, f"Error {code}")
+
+
 def to_jsonable(value):
-    """Convierte un valor COM (pywintypes datetime, etc.) a tipo JSON-safe."""
+    """Convierte un valor COM (pywintypes datetime, error de celda, etc.) a
+    tipo JSON-safe."""
     if isinstance(value, (datetime, date, dtime)):
         return value.isoformat()
+    err = excel_error_name(value)
+    if err is not None:
+        return err
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
     return str(value)

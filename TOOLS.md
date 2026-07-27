@@ -1,4 +1,4 @@
-# Referencia de Tools (51)
+# Referencia de Tools (55)
 
 Convenciones:
 - Todas las tools que tocan Excel lo arrancan solas si no está corriendo (lazy init).
@@ -17,7 +17,7 @@ Convenciones:
 
 | Tool | Argumentos | Devuelve | Notas |
 |---|---|---|---|
-| `open_workbook` | `path`, `read_only=False`, `password=None`, `enable_macros=False` | hojas + metadata | Con `enable_macros=False` las macros NO se cargan (seguro para .xlsm ajenos). Para `execute_vba_macro` abrir con `True` |
+| `open_workbook` | `path`, `read_only=False`, `password=None`, `enable_macros=False`, `sanitize_names="auto"` | hojas + metadata (+ `sanitized`) | Con `enable_macros=False` las macros NO se cargan (seguro para .xlsm ajenos). Para `execute_vba_macro` abrir con `True`. `sanitize_names="auto"` abre una copia temporal sin los nombres rotos cuando el archivo puede colgar por el diálogo "Conflicto de nombres" (el original nunca se toca) |
 | `save_workbook` | `path=None` | `{saved, path}` | Sin `path` → Save; con `path` → SaveAs (formato por extensión: .xlsx/.xlsm/.xlsb/.xls) |
 | `close_workbook` | `save_changes=False` | `{closed, saved, temp_cleaned}` | Por defecto NO guarda. Borra la copia saneada si el libro se abrió con saneo |
 | `recalculate` | `full=False`, `sheet=None`, `wait_async=False` | `{calculated, mode, calculation_state}` | El MCP fuerza cálculo MANUAL al abrir: sin esto las fórmulas nuevas no evalúan. `full` = CalculateFull; `sheet` = solo esa hoja; `wait_async` = automático temporal + espera queries CUBE (`#GETTING_DATA`). Timeout 600s |
@@ -114,6 +114,15 @@ Para tablas/hojas grandes sin quemar el contexto del agente. Fast path COM: **un
 | `list_shapes` | `sheet` | `{top_level_count, total_count, shapes}` árbol con `children` | Ve lo que `read_range` no ve: gráficos, slicers, rectángulos, imágenes. Recursa dentro de grupos (los gauges reales suelen estar agrupados) |
 | `list_charts` | `sheet` | `{chart_count, charts}` con tipo legible, series y origen | `group_path` marca charts anidados; `is_pivot_chart` + `pivot_source` identifican el pivot que lo alimenta; `-4111` = xlCombination (típico de gauges) |
 | `list_slicers` | `include_items=False` | `{slicer_cache_count, slicer_caches}` | Por cache: OLAP, origen, pivots que controla y posición de cada slicer visible. **Items de caches OLAP jamás se listan** (iterar items del Data Model cuelga la sesión COM — MANUAL §5.2); no-OLAP solo con `include_items=True` (tope 50) |
+
+## Introspección (desenmarañar libros ajenos)
+
+| Tool | Argumentos | Devuelve | Notas |
+|---|---|---|---|
+| `search_workbook` | `query`, `where="both"`, `regex=False`, `match_case=False`, `whole_cell=False`, `sheet=None`, `max_results=500` | `{count, truncated, engine, matches}` con `sheet`/`cell`/`value`/`formula`/`matched_in` | El "grep" de Excel. `regex=False` = motor nativo `Find` (sin techo de tamaño); `regex=True` lee la hoja (techo 2M celdas/hoja). **Idioma**: buscar fórmulas con el motor nativo usa el texto localizado (`SUMA(`), con regex usa `.Formula` en inglés. Solo celdas: no busca en shapes, comentarios ni VBA |
+| `list_defined_names` | `broken_only=False` | `{total, broken, hidden, builtin, workbook_scoped, sheet_scoped, names, truncated}` | Conteos sobre el universo completo + muestra de 300. `broken` = `#REF!` o referencia externa `[n]`. Si `open_workbook` saneó el archivo, aquí ya no habrá rotos (los quitó la copia) |
+| `clean_defined_names` | `broken_only=True`, `include_builtin=False`, `save=False` | `{removed, failed, remaining, saved}` | **Escritura**. Preserva los built-in (`Print_Area`, `_FilterDatabase`) aunque estén rotos; borrarlos suele lanzar 1004. Rechaza libros en solo lectura. `save=False` deja el borrado en memoria; sobre una copia saneada exige `save_workbook(<ruta original>)` |
+| `list_connections` | — | `{count, connections, excel_links}` | De dónde sale la data: OLE DB, ODBC, Power Query, cubos OLAP/SSAS, Data Model, texto + vínculos a otros libros. **Nunca sondea la red**: `reachable` distingue rutas locales verificadas de `no_verificable (servidor/red/UNC)`. Cadenas parseadas y SIN credenciales |
 
 ## Diagnóstico del entorno
 

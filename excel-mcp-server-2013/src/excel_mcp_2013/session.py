@@ -281,6 +281,15 @@ class SessionManager:
                 pass
         self._temp_copies.clear()
 
+    def is_temp_copy(self, full_name: str) -> bool:
+        """True si la ruta abierta es una COPIA temporal saneada (no el original).
+
+        Lo usan las tools que escriben (p.ej. clean_defined_names con save=True):
+        un wb.Save() sobre la copia se perderia al cerrar; hay que persistir con
+        save_workbook(<ruta original>).
+        """
+        return str(full_name) in self._temp_copies
+
     def discard_temp_copy(self, full_name: str) -> bool:
         """Borrar la copia temporal saneada de un libro que se cierra individualmente.
 

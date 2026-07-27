@@ -19,6 +19,9 @@ Ruta del código: `excel-mcp-server-2013/src/excel_mcp_2013/`
 | 4 | No hay herramienta de recálculo; cálculo forzado a MANUAL | Fórmulas no evaluaban hasta guardar+reabrir | ✅ **RESUELTO** (v1.4.0: recalculate) |
 | 5 | Autoría de libros (hojas+estilos) inviable por COM en volumen | Se construyó con `openpyxl`, MCP solo validó | 🟡 Media (workflow) |
 | 6 | Nota: la codificación Unicode del MCP funcionó bien | (no es bug — ver abajo) | ⚪ Info |
+| 7 | Sin introspección: buscar a ciegas, nombres definidos leídos del XML a mano, conexiones vistas con `unzip` | Se perdió tiempo fuera del MCP para entender libros ajenos | ✅ **RESUELTO** (v1.5.0: search_workbook, list/clean_defined_names, list_connections) |
+| 8 | Celdas en error se leían como el entero `-2146826246` en vez de `#N/A` | Contaminaba lecturas y exports | ✅ **RESUELTO** (v1.5.0: `to_jsonable`) |
+| 9 | Fuentes de intranet (cubo SSAS) inalcanzables desde el PC personal | Celdas CUBE en `#GETTING_DATA` | ⚪ **Externa** (no del MCP — ver §7) |
 
 > **Corrección tras verificar (2026-07-24):** el diagnóstico inicial de #1 (falta de
 > `UpdateLinks=0`) resultó **incompleto**. Al probar el fix, el archivo SEGUÍA colgando.
@@ -226,6 +229,52 @@ Los acentos (`PERÚ`, `Línea`) se vieron corruptos (`PER�`) **solo** al leer 
 `pyxlsb`/Bash en Latin-1. El MCP (`read_range`) devolvió el Unicode correcto. Se anota
 para no perseguir un falso bug: es un punto a favor del MCP, la corrupción estaba en la
 ruta alternativa fuera de él.
+
+---
+
+## 7. ✅ Introspección de libros ajenos (RESUELTO en v1.5.0)
+
+**Síntoma en la sesión Nutribella:** para entender los archivos hubo que salir del MCP —
+buscar un código PT a ojo, descubrir los 4.887 nombres definidos leyendo `xl/workbook.xml`
+a mano, y ver las conexiones con `unzip`.
+
+**Fix:** módulo `tools/introspect.py` con 4 tools — `search_workbook`,
+`list_defined_names`, `clean_defined_names`, `list_connections`. Verificado contra los
+archivos reales (`test_introspect_real.py`).
+
+**Frontera externa que estos tools MAPEAN pero NO cruzan (no es limitación del MCP):**
+el MULTIFORMATO tiene 2 conexiones a un cubo SSAS de la intranet
+(`Data Source=reporting.quala.com.co`, catálogo `VentasCorp`, `MSOLAP.5`/`MSOLAP.8`,
+`Integrated Security=SSPI` sin password). Desde el PC personal ese servidor es
+inalcanzable, y por eso las celdas CUBE quedan en `#GETTING_DATA`.
+`list_connections` las reporta como `reachable: "no_verificable (servidor)"` **sin
+intentar conectarse** — un sondeo de red bloquearía el STA único, exactamente el cuelgue
+que se blindó en §1 y §2. Para datos vivos del cubo hay que correr el libro dentro de la
+red corporativa.
+
+**Hallazgos de rendimiento medidos (no son bugs, conviene saberlos):**
+
+- `Workbooks.Open` sobre el `.xlsb` de 12 MB retorna en ~1,6 s, pero **la primera
+  llamada COM posterior tarda 18-35 s**: Excel sigue cargando el Data Model por dentro.
+  El coste se le atribuye erróneamente al primer tool que se invoque
+  (`list_connections` en sí tarda 0,1 s).
+- `list_defined_names` sobre ~3.000 nombres: ~10 s (3 llamadas COM por nombre). Resolver
+  el scope por `nm.Parent` en vez de por el string del nombre lo triplicaba.
+
+---
+
+## 8. ✅ Celdas en error leídas como número (RESUELTO en v1.5.0)
+
+**Síntoma:** una celda `#N/A` volvía como `-2146826246` y una `#GETTING_DATA` como
+`-2146826245`. Afectaba a `read_range`, `read_table`, `export_sheet` y `read_formulas`:
+un export podía llevarse enteros gigantes en vez de errores visibles.
+
+**Causa:** COM entrega las celdas en error como `VT_ERROR`, que pywin32 convierte a un
+`int` con el scode `0x800A0000 | código`; `to_jsonable` lo dejaba pasar como número.
+
+**Fix:** `utils/excel_utils.excel_error_name()` traduce el scode a `#N/A`, `#REF!`,
+`#DIV/0!`, `#GETTING_DATA`, etc. Los valores numéricos reales llegan siempre como
+`float`, así que no hay falsos positivos.
 
 ---
 

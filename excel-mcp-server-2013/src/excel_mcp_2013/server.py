@@ -72,7 +72,7 @@ mcp = FastMCP(
         "para armar; save_workbook para persistir. El codigo M generado debe validarse "
         "con validate_m_code (Excel 2013 usa el motor M v2.62 legacy)."
     ),
-    version="1.4.0",
+    version="1.5.0",
     lifespan=_lifespan,
 )
 
@@ -289,6 +289,7 @@ from .tools import (  # noqa: E402
     discovery,
     documentation,
     elt,
+    introspect,
     pivots,
     power_pivot,
     power_query,
@@ -306,6 +307,7 @@ power_query.register(mcp, session, run_with_excel)
 power_pivot.register(mcp, session, run_with_excel)
 pivots.register(mcp, session, run_with_excel)
 discovery.register(mcp, session, run_with_excel)
+introspect.register(mcp, session, run_with_excel)
 semantics.register(mcp, session, run_with_excel)
 documentation.register(mcp, session, run_with_excel)
 elt.register(mcp, session, run_with_excel)
