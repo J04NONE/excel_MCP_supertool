@@ -1,4 +1,4 @@
-# Referencia de Tools (55)
+# Referencia de Tools (57)
 
 Convenciones:
 - Todas las tools que tocan Excel lo arrancan solas si no está corriendo (lazy init).
@@ -34,7 +34,9 @@ Convenciones:
 | `write_range` | `sheet`, `range_addr`, `values` | confirmación | `range_addr` puede ser solo la esquina (`"A1"`); el tamaño lo da `values` |
 | `read_formulas` | `sheet`, `range_addr`, `local=False` | matriz 2D de fórmulas | Celdas sin fórmula devuelven su valor. `local=True` → `=SUMA(...)` (idioma UI) |
 | `write_formulas` | `sheet`, `range_addr`, `formulas`, `local=False` | confirmación | `local=False` espera inglés (`=SUM`), portable entre idiomas |
-| `apply_format` | `sheet`, `range_addr`, `bold`, `italic`, `font_size`, `font_color_rgb`, `fill_color_rgb`, `number_format` | confirmación | Colores hex `"RRGGBB"`; `number_format` ej. `"#,##0.00"`, `"dd/mm/yyyy"` |
+| `apply_format` | `sheet`, `range_addr`, `bold`, `italic`, `font_size`, `font_name`, `font_color_rgb`, `fill_color_rgb`, `number_format`, `h_align`, `v_align`, `wrap_text`, `border`, `column_width`, `row_height`, `merge` | confirmación | Colores hex `"RRGGBB"`; `number_format` ej. `"#,##0.00"`, `"dd/mm/yyyy"`. `h_align`: left/center/right/justify; `border`: thin/medium/thick/none (todas las aristas); `column_width`/`row_height` afectan columnas/filas completas del rango |
+| `apply_format_batch` | `sheet`, `formats` (lista de dicts con `range` + mismas claves) | `{applied, failed, details}` | Todo el estilo de un informe en UN tool call. Un item puede traer `sheet` propia. El batch completo se valida ANTES de aplicar nada (una spec mala no deja formato a medias) |
+| `set_freeze_panes` | `sheet`, `at=None` | `{frozen, at, frozen_rows, frozen_cols}` | `at="C5"` congela filas 1-4 y columnas A-B; `at=None` descongela |
 | `auto_fit_columns` | `sheet`, `range_addr=None` | confirmación | Sin rango ajusta todo el UsedRange |
 
 ## Lectura masiva

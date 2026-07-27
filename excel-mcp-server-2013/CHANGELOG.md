@@ -1,5 +1,50 @@
 # Changelog
 
+## v1.6.0 — 2026-07-26
+
+Paquete de autoría de estilos en volumen. Resuelve el ítem #5 de
+`LIMITACIONES_MCP.md` (el informe Nutribella se estilizó con openpyxl porque
+el MCP no cubría layout y cada zona de estilo costaba un tool call).
+
+**Corrección al diagnóstico de §5:** `apply_format` NO aplicaba "celda a celda"
+(siempre operó sobre el `Range` completo). Los huecos reales eran (a) propiedades
+ausentes — ancho de columna, freeze panes, bordes, alineación, fuente, merge — y
+(b) el coste por *viaje* (1 tool call por zona). Medido: 60 rangos × 3 props por
+COM directo = 0,6 s; el cuello es el round-trip, no COM.
+
+### Cambios en tools existentes
+
+- **`apply_format`** (`tools/cells.py`): 8 propiedades nuevas, compatible hacia
+  atrás — `font_name`, `h_align` (left|center|right|justify), `v_align`
+  (top|center|bottom), `wrap_text`, `border` (thin|medium|thick|none, todas las
+  aristas), `column_width`, `row_height`, `merge`.
+
+### Nuevos tools (`tools/cells.py`)
+
+- **`apply_format_batch`**: N especificaciones de formato en UN tool call
+  (`formats=[{"range": ..., ...}]`, mismas claves; un item puede traer `sheet`
+  propia). El batch completo se valida SIN COM antes de aplicar nada — una spec
+  inválida no deja el formato a medias. Errores COM post-validación se reportan
+  por item (`{applied, failed, details}`) sin abortar el resto.
+
+- **`set_freeze_panes`**: `at="C5"` congela filas 1-4 y columnas A-B (semántica
+  Excel/openpyxl); `at=None` descongela. Verificado en instancia oculta sin
+  `Select` (vía `SplitRow`/`SplitColumn` sobre la ventana activa).
+
+### Notas de implementación
+
+- La división de trabajo con openpyxl sigue válida para autoría masiva de
+  `.xlsx` sin Excel; el MCP ahora cubre el estilo de informes de tamaño normal
+  y todo lo COM-only (`.xlsb`, Data Model, recálculo).
+- Bump de versión: `1.5.0 → 1.6.0` (57 tools).
+
+### Tests
+
+- `test_format_tools.py`: 44 checks (validación pura, props nuevas verificadas
+  leyendo de vuelta por COM, batch con pre-vuelo, freeze/unfreeze).
+- Regresión verde: `test_introspect`, `test_bulk_tools`, `test_sanitize`,
+  `test_guard_wedge`, `test_hardening`.
+
 ## v1.5.0 — 2026-07-26
 
 Paquete de introspección para desenmarañar libros ajenos sin salir del MCP.

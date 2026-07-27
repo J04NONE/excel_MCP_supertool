@@ -17,7 +17,7 @@ Ruta del código: `excel-mcp-server-2013/src/excel_mcp_2013/`
 | 2 | Una llamada COM colgada tumba TODA la sesión (STA único) | `get_session_info` también expiró; se perdió el libro abierto | ✅ **RESUELTO** (fail-fast por diálogo + kill inmediato + timeout dedicado) |
 | 3 | Sin lectura masiva de `.xlsb` / tabla por nombre / Data Model | Hubo que extraer con `pyxlsb` fuera del MCP | ✅ **RESUELTO** (v1.4.0: read_table, export_sheet, diagnóstico) |
 | 4 | No hay herramienta de recálculo; cálculo forzado a MANUAL | Fórmulas no evaluaban hasta guardar+reabrir | ✅ **RESUELTO** (v1.4.0: recalculate) |
-| 5 | Autoría de libros (hojas+estilos) inviable por COM en volumen | Se construyó con `openpyxl`, MCP solo validó | 🟡 Media (workflow) |
+| 5 | Autoría de libros (hojas+estilos) inviable por COM en volumen | Se construyó con `openpyxl`, MCP solo validó | ✅ **RESUELTO** (v1.6.0: apply_format ampliado, apply_format_batch, set_freeze_panes) |
 | 6 | Nota: la codificación Unicode del MCP funcionó bien | (no es bug — ver abajo) | ⚪ Info |
 | 7 | Sin introspección: buscar a ciegas, nombres definidos leídos del XML a mano, conexiones vistas con `unzip` | Se perdió tiempo fuera del MCP para entender libros ajenos | ✅ **RESUELTO** (v1.5.0: search_workbook, list/clean_defined_names, list_connections) |
 | 8 | Celdas en error se leían como el entero `-2146826246` en vez de `#N/A` | Contaminaba lecturas y exports | ✅ **RESUELTO** (v1.5.0: `to_jsonable`) |
@@ -201,25 +201,32 @@ A3=13; restaura Manual tras `wait_async`. Docstring advierte el default manual.
 
 ---
 
-## 5. 🟡 Autoría de libros con estilos en volumen: hoy se resuelve con openpyxl
+## 5. ✅ Autoría de libros con estilos en volumen (RESUELTO en v1.6.0)
 
 **Síntoma.** El libro de salida (6 hojas; fuentes, rellenos, formatos numéricos, anchos
 de columna, `freeze_panes`, 441×14 fórmulas + una hoja de 3.105 filas de datos) se
-construyó con **openpyxl**, usando el MCP solo para abrir, recalcular y validar. Hacerlo
-por COM (`apply_format`/`write_range` celda a celda) serían cientos de llamadas lentas.
+construyó con **openpyxl**, usando el MCP solo para abrir, recalcular y validar.
 
-**Causa raíz / matiz.** No es tanto un bug como una **división de trabajo**:
-- `openpyxl` es ideal para *autoría* de `.xlsx` (rápido, sin COM), pero **no lee `.xlsb`**
-  ni preserva el Data Model.
-- El MCP (COM) es imprescindible para lo que openpyxl no puede: `.xlsb`, Data Model,
-  tablas dinámicas nativas, VBA, Power Query y **recálculo real**.
+**Corrección al diagnóstico original (verificado en v1.6.0):** `apply_format` NUNCA
+aplicó "celda a celda" — siempre operó sobre el objeto `Range` completo. Los huecos
+reales eran otros dos:
 
-**Fix propuesto (enhancement).**
+1. **Propiedades ausentes**: `column_width` y `freeze_panes` (las que el script de
+   openpyxl sí usó), bordes, alineación, `wrap_text`, `font_name`, `row_height` y
+   `merge` no existían en ningún tool del MCP.
+2. **Coste por viaje**: cada zona de estilo = 1 tool call (round-trip MCP + STA).
+   Medido: 60 rangos × 3 props por COM directo = 0,6 s — el cuello era el viaje,
+   no COM.
 
-1. Documentar el flujo recomendado: *openpyxl para armar el `.xlsx`; MCP para lo COM-only*.
-2. Si se quiere cubrir estilos en el MCP, permitir que `apply_format` reciba un **rango**
-   y aplique el estilo con un único objeto `Range` (evita el bucle por celda).
-   `write_range`/`write_formulas` ya aceptan array 2D (bien); el hueco es el **estilo masivo**.
+**Fix (v1.6.0):** `apply_format` extendido con las 8 propiedades faltantes +
+`apply_format_batch` (todo el estilo de un informe en UN tool call, con validación
+pre-vuelo del batch completo) + `set_freeze_panes`. Con esto, el informe Nutribella
+se habría estilizado en ~3 tool calls.
+
+**División de trabajo que sigue válida:** para autoría masiva de `.xlsx` **sin Excel
+disponible** (o miles de zonas de estilo), openpyxl sigue siendo razonable; el MCP es
+imprescindible para lo que openpyxl no puede: `.xlsb`, Data Model, pivots nativas,
+VBA, Power Query y **recálculo real**.
 
 ---
 

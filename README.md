@@ -13,7 +13,7 @@
 | 🧩 **Stack** | Python 3.11+ · FastMCP 3.x · pywin32 · psutil · typer |
 | 💻 **Desarrollo** | Office LTSC Professional Plus 2021 (v16.0, 64-bit) |
 | 🎯 **Target** | Excel 2013 Professional Plus (Power Query v2.62 legacy) |
-| 🔧 **Tools** | **55 herramientas MCP** organizadas en 13 módulos |
+| 🔧 **Tools** | **57 herramientas MCP** organizadas en 13 módulos |
 | 🏗️ **Arquitectura** | Thread STA dedicado · DispatchEx (instancia propia) · Recovery automático |
 
 > ¿Por qué COM y no openpyxl? Porque solo el Excel vivo puede ejecutar macros VBA, refrescar Power Query, calcular fórmulas y crear tablas dinámicas **nativas**, idénticas a las que haría un humano con la interfaz de Excel.

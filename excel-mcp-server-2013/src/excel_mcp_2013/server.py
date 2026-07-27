@@ -72,7 +72,7 @@ mcp = FastMCP(
         "para armar; save_workbook para persistir. El codigo M generado debe validarse "
         "con validate_m_code (Excel 2013 usa el motor M v2.62 legacy)."
     ),
-    version="1.5.0",
+    version="1.6.0",
     lifespan=_lifespan,
 )
 
